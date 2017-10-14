@@ -8,29 +8,7 @@
             [sparkledriver.element :as el]
             [sparkledriver.retry :refer [with-retry retry-backoff *retry-fn*]]))
 
-; via https://stackoverflow.com/a/1879961/313561
-(defn try-times*
-  "Executes thunk. If an exception is thrown, will retry. At most n retries
-  are done. If still some exception is thrown it is bubbled upwards in
-  the call chain."
-  [n delay thunk]
-  (loop [n n]
-    (if-let [result (try
-                      [(thunk)]
-                      (catch Exception e
-                        (when (zero? n)
-                          (throw e))))]
-      (result 0)
-      (do
-        (Thread/sleep delay)
-        (recur (dec n))))))
-
-(defmacro try-times
-  "Executes body. If an exception is thrown, will retry. At most n retries
-  are done. If still some exception is thrown it is bubbled upwards in
-  the call chain."
-  [n delay & body]
-  `(try-times* ~n ~delay (fn [] ~@body)))
+(def rows-xpath "//div[@id='DocList1_ContentContainer1']//tr//tr[.//input[@type='checkbox']]")
 
 (defn retry-const
   ([frequency timeout try-fn] (retry-const frequency timeout nil try-fn))
@@ -78,10 +56,10 @@
     (el/send-text! (el/find-by-id browser "SearchFormEx1_ACSTextBox_StreetNumber") (str street-num)))
   (el/send-text! (el/find-by-id browser "SearchFormEx1_ACSTextBox_StreetName") street-name)
   (el/click! (el/find-by-xpath browser (str ".//option[text()='" (s/upper-case city) "']")))
-  (el/click! (el/find-by-id browser "SearchFormEx1_btnSearch")))
-
-(defn find-rows [browser]
-  (el/find-by-xpath* browser "//div[@id='DocList1_ContentContainer1']//tr//tr[.//input[@type='checkbox']]"))
+  (el/click! (el/find-by-id browser "SearchFormEx1_btnSearch"))
+  (with-retry (partial retry-backoff 16)
+    ; sniff test to ensure results have loaded
+    (el/find-by-xpath browser rows-xpath)))
 
 (defn find-doc-img [browser]
   (el/find-by-xpath browser "//img[@id='ImageViewer1_docImage' and contains(@src, 'ACSResource')]"))
@@ -97,10 +75,11 @@
 (defn add-to-basket [browser row]
   ; load in right hand column
   (brw/execute-script browser (last (re-find #"javascript:(.*)" (el/attr (el/find-by-tag row "a") "href"))))
-  ; check to make sure the right hand column has loaded
   (try
-    (let [bookpage (el/text (el/find-by-xpath (first (find-rows browser)) "//a[contains(@id, 'Book/Page')]"))]
+    (let [bookpage (el/text (el/find-by-css row "a[id*='Book/Page']"))] ; find-by-xpath doesn't seem to scope to passed element
+      (prn (el/text row))
       (with-retry (partial retry-backoff 16)
+        ; check to make sure the right hand column has loaded
         (el/find-by-xpath browser (str "//table[@id='DocDetails1_GridView_Details']//td[text()='" bookpage "']"))))
     (catch Exception e (sh "open" (el/screenshot browser))))
   ; open modal
@@ -114,7 +93,7 @@
 (defn download-basket [browser filename]
   (brw/execute-script browser "__doPostBack('Navigator1$Basket','')")
   (brw/execute-script browser "__doPostBack('BasketCtrl1$LinkButtonDownload','')")
-  (-> (try-times 200 100
+  (-> (with-retry (partial retry-const 100 20000)
                  (focus-popup browser)
                  (el/find-by-id browser "DownloadLink"))
       (el/attr "href")
@@ -128,31 +107,10 @@
     (brw/with-browser [browser (brw/make-browser)]
       (brw/fetch! browser "http://www.masslandrecords.com/MiddlesexSouth/Default.aspx")
       (property-search browser street-num street-name city)
-      (dotimes [n 2] ; (count (find-rows browser))
-        (add-to-basket browser (nth (find-rows browser) n)))
+      (dotimes [n (count (el/find-by-xpath* browser rows-xpath))]
+        (add-to-basket browser (nth (el/find-by-xpath* browser rows-xpath) n)))
       (download-basket browser (str "/Users/leppert/Downloads/" street-num "-" street-name "-" city ".zip")))))
 
 (defn scratch []
   (scrape)
-
-  (def browser (brw/fetch! (brw/make-browser) "http://www.masslandrecords.com/MiddlesexSouth/Default.aspx"))
-  (let [street-num 36
-        street-name "Follen"
-        city "Cambridge"]
-    (property-search browser street-num street-name city))
-  (dotimes [n 2] ; (count (find-rows browser))
-    (add-to-basket browser (nth (find-rows browser) n)))
-  (brw/execute-script browser "__doPostBack('Navigator1$Basket','')")
-  (do
-    (brw/execute-script browser "__doPostBack('BasketCtrl1$LinkButtonDownload','')")
-    (-> (try-times 200 100
-                   (focus-popup browser)
-                   (el/find-by-id browser "DownloadLink"))
-        (el/attr "href")
-        (download "/Users/leppert/Downloads/tester.zip")))
-  
-  (sh "open" (el/screenshot browser))
-  (brw/close-browser! browser)
-
-
   )
