@@ -33,19 +33,6 @@
 (defn download [url dest]
   (sh "curl" "-Lo" dest url))
 
-(defn get-img-props
-  [element]
-  (let [size (el/size element)]
-    {:src (el/attr element "src")
-     :area (* (.getWidth size) (.getHeight size))}))
-
-(defn get-largest-img
-  [browser]
-  (->> (el/find-by-tag* browser "img")
-       (filter el/displayed?)
-       (map get-img-props)
-       (reduce #(if (> (:area %1) (:area %2)) %1 %2))))
-
 (defn property-search
   [browser street-num street-name city]
   ; select Property Search
@@ -60,9 +47,6 @@
   (with-retry (partial retry-backoff 16)
     ; sniff test to ensure results have loaded
     (el/find-by-xpath browser rows-xpath)))
-
-(defn find-doc-img [browser]
-  (el/find-by-xpath browser "//img[@id='ImageViewer1_docImage' and contains(@src, 'ACSResource')]"))
 
 (defn focus-popup [browser]
   (*retry-fn* #(if (> (count (brw/all-windows browser)) 1)
