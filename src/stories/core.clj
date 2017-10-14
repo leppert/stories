@@ -2,13 +2,11 @@
   (:require [clojure.java.io :as io]
             [clojure.java.shell :refer [sh]]
             [clojure.string :as s]
-            [clj-http.client :as client]
-            [sparkledriver.cookies :refer [browser-cookies->map]]
             [sparkledriver.browser :as brw]
             [sparkledriver.element :as el]
-            [sparkledriver.retry :refer [with-retry retry-backoff *retry-fn*]]))
-
-(def rows-xpath "//div[@id='DocList1_ContentContainer1']//tr//tr[.//input[@type='checkbox']]")
+            [sparkledriver.retry :refer [with-retry
+                                         retry-backoff
+                                         *retry-fn*]]))
 
 (defn retry-const
   ([frequency timeout try-fn] (retry-const frequency timeout nil try-fn))
@@ -33,6 +31,16 @@
 (defn download [url dest]
   (sh "curl" "-Lo" dest url))
 
+(defn focus-popup [browser]
+  (*retry-fn* #(if (> (count (brw/all-windows browser)) 1)
+                 (brw/switch-to-window browser (last (brw/all-windows browser)))
+                 (throw (Exception. "Popup failed to open.")))))
+
+(defn focus-main [browser]
+  (brw/switch-to-window browser (first (brw/all-windows browser))))
+
+(def rows-xpath "//div[@id='DocList1_ContentContainer1']//tr//tr[.//input[@type='checkbox']]")
+
 (defn property-search
   [browser street-num street-name city]
   ; select Property Search
@@ -44,24 +52,16 @@
   (el/send-text! (el/find-by-id browser "SearchFormEx1_ACSTextBox_StreetName") street-name)
   (el/click! (el/find-by-xpath browser (str ".//option[text()='" (s/upper-case city) "']")))
   (el/click! (el/find-by-id browser "SearchFormEx1_btnSearch"))
+
   (with-retry (partial retry-backoff 16)
     ; sniff test to ensure results have loaded
     (el/find-by-xpath browser rows-xpath)))
-
-(defn focus-popup [browser]
-  (*retry-fn* #(if (> (count (brw/all-windows browser)) 1)
-                 (brw/switch-to-window browser (last (brw/all-windows browser)))
-                 (throw (Exception. "Popup failed to open.")))))
-
-(defn focus-main [browser]
-  (brw/switch-to-window browser (first (brw/all-windows browser))))
 
 (defn add-to-basket [browser row]
   ; load in right hand column
   (brw/execute-script browser (last (re-find #"javascript:(.*)" (el/attr (el/find-by-tag row "a") "href"))))
   (try
     (let [bookpage (el/text (el/find-by-css row "a[id*='Book/Page']"))] ; find-by-xpath doesn't seem to scope to passed element
-      (prn (el/text row))
       (with-retry (partial retry-backoff 16)
         ; check to make sure the right hand column has loaded
         (el/find-by-xpath browser (str "//table[@id='DocDetails1_GridView_Details']//td[text()='" bookpage "']"))))
@@ -69,10 +69,8 @@
   ; open modal
   (brw/execute-script browser "__doPostBack('DocDetails1$ButAddToBasket','')")
   ; submit form
-  (try
-    (with-retry (partial retry-backoff 16)
-      (el/click! (el/find-by-id browser "OrderCriteriaCtrl1_ImageButton_Next")))
-    (catch Exception e (sh "open" (el/screenshot browser)))))
+  (with-retry (partial retry-backoff 16)
+    (el/click! (el/find-by-id browser "OrderCriteriaCtrl1_ImageButton_Next"))))
 
 (defn download-basket [browser filename]
   (brw/execute-script browser "__doPostBack('Navigator1$Basket','')")
@@ -89,11 +87,22 @@
         street-name "Follen"
         city "Cambridge"]
     (brw/with-browser [browser (brw/make-browser)]
+      (prn (str "┌ Scraping " street-num " " street-name ", " city))
       (brw/fetch! browser "http://www.masslandrecords.com/MiddlesexSouth/Default.aspx")
+
+      (prn "├ Beginning property search")
       (property-search browser street-num street-name city)
-      (dotimes [n (count (el/find-by-xpath* browser rows-xpath))]
-        (add-to-basket browser (nth (el/find-by-xpath* browser rows-xpath) n)))
-      (download-basket browser (str "/Users/leppert/Downloads/" street-num "-" street-name "-" city ".zip")))))
+      (let [row-count (count (el/find-by-xpath* browser rows-xpath))]
+        (prn (str "├-- " row-count " records found"))
+        (dotimes [n row-count]
+          ; must reselect the row each time because they update the DOM
+          (let [row (nth (el/find-by-xpath* browser rows-xpath) n)]
+            (prn (str "├-- (" (+ n 1) "/" row-count ") Adding: " (s/replace (el/text row) "\t" " ")))
+            (add-to-basket browser row))))
+      
+      (prn "├ Downloading zip archive")
+      (download-basket browser (str "/Users/leppert/Downloads/" street-num "-" street-name "-" city ".zip")))
+    (prn "└ Complete")))
 
 (defn scratch []
   (scrape)
