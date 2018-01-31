@@ -86,5 +86,6 @@
                 (groups browser)))
     
     (prn "├ Downloading zip archive")
+    ;; TODO - handle case where no records are found
     (download-basket browser (str "/Users/leppert/Downloads/" street-num "-" street-name "-" city ".zip")))
   (prn "└ Complete"))
